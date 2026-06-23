@@ -18,33 +18,37 @@
 #include <elapsedMillis.h>
 #include <DS18B20.h>
 
-#define NO_PRESS      0
-#define SHORT_PRESS   60
-#define LONG_PRESS    2000
-#define DEBOUNCE      200
+#define NO_PRESS 0
+#define SHORT_PRESS 60
+#define LONG_PRESS 2000
+#define DEBOUNCE 200
 #define VOLUME 30
 
 // pin connections
-#define CS_PIN        10
-#define RST_PIN        8
-#define DC_PIN         9
-#define BK_PIN         5
-#define AL_PIN         6
-#define L1_PIN         2
-#define L2_PIN         3
-#define BU_PIN         A2
-#define BD_PIN         A1
-#define BE_PIN         A3
-#define TS_PIN         4
+#define CS_PIN 10
+#define RST_PIN 8
+#define DC_PIN 9
+#define BK_PIN 5
+#define AL_PIN 6
+#define L1_PIN 2
+#define L2_PIN 3
+#define BU_PIN A2
+#define BD_PIN A1
+#define BE_PIN A3
+#define TS_PIN 4
 #define STAGE1_LIMITS 0.15
 #define STAGE2_LIMITS 1.15
 #define SCALE_BAND 5.0
 #define ALARM_BAND 2.0
 
+#define BRIGHT_MAX 100
+#define BRIGHT_MIN 20
+#define MENU_EXIT_TIME 10000
+
 double Setpoint = 77.0;
 bool AlarmState = false;
 double TempAdjust = 0.0;
-
+uint32_t ExitTimer = millis();
 unsigned long Bits, Count;
 double Volts, r2;
 
@@ -55,15 +59,15 @@ bool TempLimitWarning = false;
 bool RefreshDisplay = true;
 byte PointsX[145];
 byte PointsY[145];
-uint8_t address[] = {0, 0, 0, 0, 0, 0, 0, 0};
+uint8_t address[] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 bool ScreenSaverFlag = false;
 int i = 0, TempX = 0;
 double TempF = 0.0, oldTempF = 0.0;
 double Output = 0.0;
 
 double x = 0.0, ox = 0.0, y = 0.0, oy = 0.0;
-double gx = 15,  gy = 125,  w = 140,  h = 95,  xlo = 0,  xhi = 140,  xinc = 28,  ylo = Setpoint - SCALE_BAND,  yhi = Setpoint - SCALE_BAND,  yinc = SCALE_BAND / 2;
-byte  oldSSx = 0, SSx = 0, oldSSy = 0, SSy = 0;
+double gx = 15, gy = 125, w = 140, h = 95, xlo = 0, xhi = 140, xinc = 28, ylo = Setpoint - SCALE_BAND, yhi = Setpoint - SCALE_BAND, yinc = SCALE_BAND / 2;
+byte oldSSx = 0, SSx = 0, oldSSy = 0, SSy = 0;
 unsigned long ButtonDebounce = 200;
 int BEButtonPress = NO_PRESS;
 int BUButtonPress = NO_PRESS;
@@ -78,9 +82,17 @@ bool TempAdjustState = false;
 
 // Display.initR(INITR_BLACKTAB);
 
-// in the ST7735.cpp library around line 240 add
-//   _colstart = 2;
-//   _rowstart = 1;
+// in the ST7735.cpp library around line 255 add
+/*
+  } else {
+    // colstart, rowstart left at default '0' values
+	_colstart = 2;
+    _rowstart = 1;
+    displayInit(Rcmd2red);
+  }
+
+  */
+
 Adafruit_ST7735 Display = Adafruit_ST7735(CS_PIN, DC_PIN, RST_PIN);
 
 elapsedSeconds ScreenUpdate;
@@ -97,7 +109,7 @@ void setup() {
 
   byte temp = 0;
 
-  Serial.begin(57600);
+  Serial.begin(9600);
 
   //  Serial.println("Starting...");
   pinMode(BK_PIN, OUTPUT);
@@ -115,7 +127,9 @@ void setup() {
   Dallas.select(address);
   Dallas.setResolution(12);
 
-  Display.initR(INITR_BLACKTAB);
+  Display.initR(INITR_BLACKTAB);  //INITR_BLACKTAB
+
+
   Display.setRotation(1);
   Display.fillScreen(C_BLACK);
 
@@ -153,17 +167,16 @@ void setup() {
   DrawGrid();
   DisplayData();
 
-  for (i = 0; i <= 255; i++) {
+  for (i = 0; i <= BRIGHT_MAX; i++) {
     analogWrite(BK_PIN, i);
-    delay(10);
+    delay(20);
   }
 
-  ScreenSaver  = 0;
+  ScreenSaver = 0;
   ScreenUpdate = 0;
   AlarmPulse = 0;
-  TempUpdate = 10; // force temp read
+  TempUpdate = 10;  // force temp read
   ScreenSaverFlag = false;
-
 }
 
 void loop(void) {
@@ -173,9 +186,15 @@ void loop(void) {
   // if screen is on for say more the 10 min, blank it out
   // 10 min = 600 sec
 
-  if ((ScreenSaver > 60) && (!ScreenSaverFlag)) {
+  if ((ScreenSaver > 10) && (!ScreenSaverFlag)) {
     ScreenSaverFlag = true;
+
+    for (i = BRIGHT_MAX; i >= 0; i--) {
+      analogWrite(BK_PIN, i);
+      delay(20);
+    }
     Display.fillScreen(C_BLACK);
+
   }
 
   // sound alarms
@@ -189,8 +208,7 @@ void loop(void) {
       // at the lights
       if (AlarmPulse < 500) {
         analogWrite(AL_PIN, VOLUME);
-      }
-      else if (AlarmPulse > 500) {
+      } else if (AlarmPulse > 500) {
         analogWrite(AL_PIN, 0);
       }
       if (AlarmPulse > 1000) {
@@ -203,8 +221,7 @@ void loop(void) {
       // that way when we open/close lid, jimmy temp
       // should recover before alarm sounds
       analogWrite(AL_PIN, VOLUME);
-    }
-    else {
+    } else {
       analogWrite(AL_PIN, 0);
     }
   }
@@ -213,7 +230,7 @@ void loop(void) {
   // do this every few seconds
   if (TempUpdate >= 2000) {
 
-    TempF = Dallas.getTempF() ;
+    TempF = Dallas.getTempF();
     TempF = TempF + TempAdjust;
 
     TempAdjustState = false;
@@ -236,7 +253,7 @@ void loop(void) {
       TempLimitTimer = 0;
     }
 
-    if ((TempF > (Setpoint - ALARM_BAND)) && (TempF < (Setpoint + ALARM_BAND)))  {
+    if ((TempF > (Setpoint - ALARM_BAND)) && (TempF < (Setpoint + ALARM_BAND))) {
       TempLimitWarning = false;
     }
 
@@ -247,8 +264,7 @@ void loop(void) {
       Light1(Light1State);
       Light2(Light2State);
       ResetLight2Warning = true;
-    }
-    else if (TempF <  (Setpoint - STAGE2_LIMITS)) {
+    } else if (TempF < (Setpoint - STAGE2_LIMITS)) {
       // fire up heater 1 and heater 2
       Light1State = true;
       Light2State = true;
@@ -259,14 +275,12 @@ void loop(void) {
         ResetLight2Warning = false;
         Light2Warning++;
       }
-    }
-    else if (TempF <  (Setpoint - STAGE1_LIMITS)) {
+    } else if (TempF < (Setpoint - STAGE1_LIMITS)) {
       // fire up heater 1
       Light1State = true;
       Light2State = false;
       Light1(Light1State);
       Light2(Light2State);
-
     }
 
     DisplayData();
@@ -293,14 +307,12 @@ void loop(void) {
         x = 0;
         RedrawData();
       }
-    }
-    else {
+    } else {
       if (x >= 140) {
         RefreshDisplay = false;
         x = 0;
       }
     }
-
   }
 }
 
@@ -312,11 +324,9 @@ void RedrawData() {
         Display.drawLine(PointsX[i - 1], PointsY[i - 1], PointsX[i], PointsY[i], C_YELLOW);
         Display.drawLine(PointsX[i - 1], PointsY[i - 1] + 1, PointsX[i], PointsY[i] + 1, C_YELLOW);
         Display.drawLine(PointsX[i - 1], PointsY[i - 1] - 1, PointsX[i], PointsY[i] - 1, C_YELLOW);
-      }
-      else if (i == x) {
+      } else if (i == x) {
         Display.drawLine(PointsX[i], gy, PointsX[i], gy - h, C_CYAN);
-      }
-      else {
+      } else {
         Display.drawLine(PointsX[i - 1], PointsY[i - 1], PointsX[i], PointsY[i], C_DKYELLOW);
         Display.drawLine(PointsX[i - 1], PointsY[i - 1] + 1, PointsX[i], PointsY[i] + 1, C_DKYELLOW);
         Display.drawLine(PointsX[i - 1], PointsY[i - 1] - 1, PointsX[i], PointsY[i] - 1, C_DKYELLOW);
@@ -327,55 +337,19 @@ void RedrawData() {
 
 void DisplayData() {
 
-
-
-  if (ScreenSaverFlag) {
-
-    SSx = rand() % 35;
-    SSx = SSx + 2;
-    SSy = rand() % 85;
-    SSy = SSy + 5;
-
-    Display.setTextSize(5);
-    Display.setTextColor(C_BLACK, C_BLACK);
-    Display.setCursor(oldSSx, oldSSy);
-    Display.print(oldTempF, 0);
-    Display.setTextSize(3);
-    Display.println( (int) ((oldTempF) * 10) % 10);
-
-    if ((Light1State) || (Light2State)) {
-      Display.setTextColor(C_RED, C_BLACK);
-    }
-    else {
-      Display.setTextColor(C_CYAN, C_BLACK);
-    }
-
-    //Serial.println( TempF, 4);
-    //Serial.println( (int) ((TempF) * 10) % 10);
-
-    Display.setTextSize(5);
-    Display.setCursor(SSx, SSy);
-    Display.print(TempF, 0);
-    Display.setTextSize(3);
-    Display.println( (int) ((TempF) * 10) % 10);
-
-    oldSSx = SSx;
-    oldSSy = SSy;
-    oldTempF = TempF;
+  if (ScreenSaverFlag) { 
     return;
-
   }
 
   Display.setTextSize(2);
 
-  Display.setCursor(1 , 5);
+  Display.setCursor(1, 5);
   Display.setTextColor(C_GREEN, C_DKGREY);
   Display.print(Setpoint, 0);
 
   if (TempAdjustState) {
     Display.setTextColor(C_RED, C_DKGREY);
-  }
-  else {
+  } else {
     Display.setTextColor(C_YELLOW, C_DKGREY);
   }
 
@@ -388,8 +362,7 @@ void DisplayData() {
   if (AlarmState) {
     Display.setTextColor(C_RED, C_DKGREY);
     Display.print(F("A"));
-  }
-  else {
+  } else {
     Display.setTextColor(C_DKRED, C_DKGREY);
     Display.print(F("A"));
     Display.drawLine(93, 4, 107, 18, C_DKRED);
@@ -400,8 +373,7 @@ void DisplayData() {
   if (Light1State) {
     Display.setTextColor(C_WHITE, C_RED);
     Display.fillRoundRect(115, 2, 19, 22, 5, C_RED);
-  }
-  else {
+  } else {
     Display.setTextColor(C_DKRED, C_MDGREY);
     Display.fillRoundRect(115, 2, 19, 22, 5, C_MDGREY);
   }
@@ -412,15 +384,13 @@ void DisplayData() {
   if (Light2State) {
     Display.setTextColor(C_WHITE, C_RED);
     Display.fillRoundRect(135, 2, 19, 22, 5, C_RED);
-  }
-  else {
+  } else {
     Display.setTextColor(C_DKRED, C_MDGREY);
     Display.fillRoundRect(135, 2, 19, 22, 5, C_MDGREY);
   }
   Display.setCursor(140, 5);
 
   Display.print(F("2"));
-
 }
 void GetYScale() {
 
@@ -430,14 +400,12 @@ void GetYScale() {
 
   // blank out old since scale has been changed
   Display.fillRect(0, 0, 160, 25, C_DKGREY);
-
 }
 
 void Light1(bool state) {
   if (state) {
     digitalWrite(L1_PIN, HIGH);
-  }
-  else {
+  } else {
     digitalWrite(L1_PIN, LOW);
   }
   delay(100);
@@ -446,8 +414,7 @@ void Light1(bool state) {
 void Light2(bool state) {
   if (state) {
     digitalWrite(L2_PIN, HIGH);
-  }
-  else {
+  } else {
     digitalWrite(L2_PIN, LOW);
   }
   delay(100);
@@ -459,60 +426,59 @@ void DrawGrid() {
   double temp;
 
   // draw y scale
-  temp =  (ylo - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
+  temp = (ylo - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
   Display.drawLine(gx, temp, gx + w, temp, C_BLUE);
   Display.drawLine(gx, temp - 1, gx + w, temp - 1, C_BLUE);
 
-  temp =  (yhi - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
+  temp = (yhi - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
   Display.drawLine(gx, temp, gx + w, temp, C_GREY);
 
   // draw alarm limits
   y = Setpoint + ALARM_BAND;
-  y =  (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
+  y = (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
   for (i = gx; i < (gx + w); i += 6) {
     Display.drawLine(i, y, i + 2, y, C_RED);
   }
 
   y = Setpoint - ALARM_BAND;
-  y =  (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
+  y = (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
   for (i = gx; i < (gx + w); i += 6) {
     Display.drawLine(i, y, i + 2, y, C_BLUE);
   }
 
   // draw lights off
   y = Setpoint + (1.0f * STAGE1_LIMITS);
-  y =  (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
+  y = (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
   for (i = gx; i < (gx + w); i += 6) {
     Display.drawLine(i, y, i + 2, y, C_MDORANGE);
   }
 
   // draw light on stage 1
   y = Setpoint - (1.0f * STAGE1_LIMITS);
-  y =  (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
+  y = (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
   for (i = gx; i < (gx + w); i += 6) {
     Display.drawLine(i, y, i + 2, y, C_MDORANGE);
   }
   // draw light on stage 2
   y = Setpoint - STAGE2_LIMITS;
-  y =  (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
+  y = (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
   for (i = gx; i < (gx + w); i += 6) {
     Display.drawLine(i, y, i + 2, y, C_MDORANGE);
   }
   y = Setpoint;
-  y =  (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
+  y = (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
   //temp =  (i - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
   Display.drawLine(gx, y, gx + w, y, C_GREEN);
 
   Display.setTextSize(1);
 
-  for ( i = ylo; i <= yhi; i += yinc) {
+  for (i = ylo; i <= yhi; i += yinc) {
 
-    temp =  (i - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
+    temp = (i - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
     Display.setTextColor(C_WHITE, C_BLACK);
     if (i == yhi) {
       Display.setCursor(2, temp - 1);
-    }
-    else {
+    } else {
       Display.setCursor(2, temp - 4);
     }
     Display.println(i, 0);
@@ -520,18 +486,17 @@ void DrawGrid() {
 
   // draw x scale
   for (i = xlo; i <= xhi; i += xinc) {
-    temp =  (i - xlo) * ( w) / (xhi - xlo) + gx;
+    temp = (i - xlo) * (w) / (xhi - xlo) + gx;
     if (i == xlo) {
       Display.drawLine(temp, gy, temp, gy - h, C_BLUE);
       Display.drawLine(temp + 1, gy, temp + 1, gy - h, C_BLUE);
-    }
-    else {
+    } else {
       Display.drawLine(temp, gy, temp, gy - h, C_GREY);
     }
   }
 }
 
-void Graph(double x, double y, bool & redraw) {
+void Graph(double x, double y, bool& redraw) {
 
   // do some bounds checks to keep graph from falling out
   // of range
@@ -547,12 +512,12 @@ void Graph(double x, double y, bool & redraw) {
 
   if (redraw == true) {
     redraw = false;
-    ox = (x - xlo) * ( w) / (xhi - xlo) + gx;
+    ox = (x - xlo) * (w) / (xhi - xlo) + gx;
     oy = (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
   }
 
-  x =  (x - xlo) * ( w) / (xhi - xlo) + gx;
-  y =  (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
+  x = (x - xlo) * (w) / (xhi - xlo) + gx;
+  y = (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
 
   PointsX[TempX] = x;
   PointsY[TempX] = y;
@@ -576,10 +541,9 @@ void Graph(double x, double y, bool & redraw) {
 
   ox = x;
   oy = y;
-
 }
 
-unsigned int Debounce(int pin, unsigned long & dtime) {
+unsigned int Debounce(int pin, unsigned long& dtime) {
   if (digitalRead(pin) == LOW) {
     if ((millis() - dtime) > DEBOUNCE) {
       // button now debounced, long press or short one
@@ -600,8 +564,12 @@ unsigned int Debounce(int pin, unsigned long & dtime) {
 void ProcessButtons() {
 
   if (ScreenSaverFlag) {
+
     // wake up display and bail out
-    if ( (analogRead(BE_PIN) < 500) || (analogRead(BU_PIN) < 500) || (analogRead(BD_PIN) < 500)) {
+    if ((analogRead(BE_PIN) < 500) || (analogRead(BU_PIN) < 500) || (analogRead(BD_PIN) < 500)) {
+
+      analogWrite(BK_PIN, BRIGHT_MAX);
+
       ScreenSaverFlag = false;
       Display.fillScreen(C_BLACK);
       ScreenSaver = 0;
@@ -609,16 +577,17 @@ void ProcessButtons() {
       DrawGrid();
       DisplayData();
       RedrawData();
-      delay(500); // poor mans debounce
+      delay(500);  // poor mans debounce
       return;
     }
-  }
-  else {
+  } else {
     // if button enter fire up menu
     if (analogRead(BE_PIN) < 500) {
+
       Menu();
       ScreenSaverFlag = false;
       Display.fillScreen(C_BLACK);
+      analogWrite(BK_PIN, BRIGHT_MAX);
       ScreenSaver = 0;
       GetYScale();
       DrawGrid();
@@ -638,8 +607,7 @@ void ProcessButtons() {
         Light1State = false;
         DisplayData();
         Light1(Light1State);
-      }
-      else {
+      } else {
         Light1State = false;
         DisplayData();
         Light1(Light1State);
@@ -652,7 +620,6 @@ void ProcessButtons() {
         Light1(Light1State);
         return;
       }
-
     }
     // if button down light up 2
     if (analogRead(BD_PIN) < 500) {
@@ -667,8 +634,7 @@ void ProcessButtons() {
         Light2State = false;
         DisplayData();
         Light2(Light2State);
-      }
-      else {
+      } else {
         Light2State = false;
         DisplayData();
         Light2(Light2State);
@@ -688,6 +654,7 @@ void ProcessButtons() {
 void Menu() {
 
   int ItemID = 0;
+  ExitTimer = millis();
 
   Display.fillScreen(C_BLACK);
 
@@ -695,7 +662,11 @@ void Menu() {
 
   while (1) {
 
-    if ( analogRead(BU_PIN) < 500) {
+    if ((millis() - ExitTimer) > MENU_EXIT_TIME) {
+      break;
+    }
+
+    if (analogRead(BU_PIN) < 500) {
       delay(100);
       ItemID--;
       if (ItemID < 0) {
@@ -703,7 +674,7 @@ void Menu() {
       }
       DrawItems(ItemID, false);
     }
-    if (( analogRead(BD_PIN) < 500)) {
+    if ((analogRead(BD_PIN) < 500)) {
       delay(100);
       ItemID++;
       if (ItemID > 3) {
@@ -711,7 +682,7 @@ void Menu() {
       }
       DrawItems(ItemID, false);
     }
-    if ( analogRead(BE_PIN) < 500) {
+    if (analogRead(BE_PIN) < 500) {
       delay(100);
       if (ItemID == 0) {
         Display.fillScreen(C_BLACK);
@@ -719,19 +690,22 @@ void Menu() {
         DrawGrid();
         DisplayData();
         break;
-      }
-      else {
+      } else {
         DrawItems(ItemID, true);
 
         while (1) {
 
-          if ( analogRead(BE_PIN) < 500) {
+          if ((millis() - ExitTimer) > MENU_EXIT_TIME) {
+            break;
+          }
+
+          if (analogRead(BE_PIN) < 500) {
             delay(100);
             Display.fillScreen(C_BLACK);
             DrawItems(ItemID, false);
             break;
           }
-          if ( analogRead(BU_PIN) < 500) {
+          if (analogRead(BU_PIN) < 500) {
             delay(100);
             if (ItemID == 1) {
               AlarmState = !AlarmState;
@@ -739,9 +713,8 @@ void Menu() {
                 analogWrite(AL_PIN, 0);
               }
               DrawItems(ItemID, true);
-            }
-            else if (ItemID == 2) {
-              Setpoint ++;
+            } else if (ItemID == 2) {
+              Setpoint++;
               if (Setpoint > 99.0) {
                 Setpoint = 99.0;
                 analogWrite(AL_PIN, VOLUME);
@@ -750,13 +723,12 @@ void Menu() {
                 delay(100);
               }
               DrawItems(ItemID, true);
-            }
-            else if (ItemID == 3) {
+            } else if (ItemID == 3) {
               TempAdjust += 0.1;
               DrawItems(ItemID, true);
             }
           }
-          if ( analogRead(BD_PIN) < 500) {
+          if (analogRead(BD_PIN) < 500) {
             delay(100);
             if (ItemID == 1) {
               AlarmState = !AlarmState;
@@ -764,9 +736,8 @@ void Menu() {
                 analogWrite(AL_PIN, 0);
               }
               DrawItems(ItemID, true);
-            }
-            else if (ItemID == 2) {
-              Setpoint --;
+            } else if (ItemID == 2) {
+              Setpoint--;
               if (Setpoint < 77.0) {
                 Setpoint = 77.0;
                 analogWrite(AL_PIN, VOLUME);
@@ -775,8 +746,7 @@ void Menu() {
                 delay(100);
               }
               DrawItems(ItemID, true);
-            }
-            else if (ItemID == 3) {
+            } else if (ItemID == 3) {
               TempAdjust -= 0.1;
               DrawItems(ItemID, true);
             }
@@ -795,92 +765,83 @@ void Menu() {
     ResetLight2Warning = false;
     TempLimitWarning = false;
   }
-
 }
 
 void DrawItems(byte Item, bool high) {
-
+  ExitTimer = millis();
   Display.fillScreen(C_BLACK);
   Display.setTextSize(2);
-  Display.setCursor(5 , 5);
+  Display.setCursor(5, 5);
 
   if (Item == 0) {
-    Display.fillRect(0 , 0, 159, 30, C_RED);
+    Display.fillRect(0, 0, 159, 30, C_RED);
     Display.setTextColor(C_WHITE, C_RED);
     Display.print(F("Exit"));
-  }
-  else {
-    Display.fillRect(0 , 0, 159, 30, C_DKBLUE);
+  } else {
+    Display.fillRect(0, 0, 159, 30, C_DKBLUE);
     Display.setTextColor(C_WHITE, C_DKBLUE);
     Display.print(F("Settings"));
   }
 
-  if (Item == 1) { // alarm
+  if (Item == 1) {  // alarm
     if (high) {
-      Display.fillRect(5 , 35, 155, 30, C_RED);
+      Display.fillRect(5, 35, 155, 30, C_RED);
       Display.setTextColor(C_WHITE, C_RED);
-    }
-    else {
-      Display.fillRect(5 , 35, 155, 30, C_DKBLUE);
+    } else {
+      Display.fillRect(5, 35, 155, 30, C_DKBLUE);
       Display.setTextColor(C_WHITE, C_DKBLUE);
     }
   }
 
   else {
-    Display.fillRect(5 , 35, 155, 30, C_BLACK);
+    Display.fillRect(5, 35, 155, 30, C_BLACK);
     Display.setTextColor(C_WHITE, C_BLACK);
   }
 
-  Display.setCursor(10 , 43);
+  Display.setCursor(10, 43);
   Display.print(F("Alarm"));
-  Display.setCursor(117 , 43);
+  Display.setCursor(117, 43);
   if (AlarmState) {
     Display.print(F("ON"));
-  }
-  else {
+  } else {
     Display.print(F("OFF"));
   }
 
-  if (Item == 2) { // setpoint
+  if (Item == 2) {  // setpoint
     if (high) {
-      Display.fillRect(5 , 65, 155, 30, C_RED);
+      Display.fillRect(5, 65, 155, 30, C_RED);
       Display.setTextColor(C_WHITE, C_RED);
-    }
-    else {
-      Display.fillRect(5 , 65, 155, 30, C_DKBLUE);
+    } else {
+      Display.fillRect(5, 65, 155, 30, C_DKBLUE);
       Display.setTextColor(C_WHITE, C_DKBLUE);
     }
 
-  }
-  else {
-    Display.fillRect(5 , 65, 155, 30, C_BLACK);
+  } else {
+    Display.fillRect(5, 65, 155, 30, C_BLACK);
     Display.setTextColor(C_WHITE, C_BLACK);
   }
-  Display.setCursor(10 , 75);
+  Display.setCursor(10, 75);
   Display.print(F("Setpoint"));
-  Display.setCursor(117 , 75);
+  Display.setCursor(117, 75);
   Display.print(Setpoint, 0);
 
   if (Item == 3) {
     // setpoint
     if (high) {
-      Display.fillRect(5 , 95, 155, 30, C_RED);
+      Display.fillRect(5, 95, 155, 30, C_RED);
       Display.setTextColor(C_WHITE, C_RED);
-    }
-    else {
-      Display.fillRect(5 , 95, 155, 30, C_DKBLUE);
+    } else {
+      Display.fillRect(5, 95, 155, 30, C_DKBLUE);
       Display.setTextColor(C_WHITE, C_DKBLUE);
     }
-  }
-  else {
-    Display.fillRect(5 , 95, 155, 30, C_BLACK);
+  } else {
+    Display.fillRect(5, 95, 155, 30, C_BLACK);
     Display.setTextColor(C_WHITE, C_BLACK);
   }
-  Display.setCursor(10 , 105);
+  Display.setCursor(10, 105);
   Display.print(F("Calib."));
-  Display.setCursor(110 , 105);
+  Display.setCursor(110, 105);
   Display.print(TempAdjust, 1);
-
 }
 
 /////////////////////////////////////
